@@ -1,10 +1,10 @@
 # Maintainer: Hanashiko hlichisper@gmail.com
-pkgname=mock-api-server
+pkgname=apimocker
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lightweight TUI/mock server for running REST API from YAML/JSON description"
 arch=('x86_64')
-url="https://github.com/Hanashiko/mock-api-server"
+url="https://github.com/Hanashiko/apimocker"
 license=('MIT')
 depends=()
 makedepends=('go')
@@ -13,9 +13,9 @@ sha256sums=('2da1159a7c7249bfece36e0bd39f438a1fa7e11fcb837d653b1cbfb773283a91' '
 
 build() {
     cd "$srcdir"
-    go build -o mock-api-server main.go
+    go build -o apimocker main.go
 }
 
 package() {
-    install -Dm755 "$srcdir/mock-api-server" "$pkgdir/usr/bin/mock-api-server"
+    install -Dm755 "$srcdir/mock-api-server" "$pkgdir/usr/bin/apimocker"
 }

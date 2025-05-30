@@ -1,8 +1,8 @@
-pkgbase = mock-api-server
+pkgbase = apimocker
 	pkgdesc = Lightweight TUI/mock server for running REST API from YAML/JSON description
 	pkgver = 0.1.0
 	pkgrel = 1
-	url = https://github.com/Hanashiko/mock-api-server
+	url = https://github.com/Hanashiko/apimocker
 	arch = x86_64
 	license = MIT
 	makedepends = go
@@ -13,4 +13,4 @@ pkgbase = mock-api-server
 	sha256sums = b49a5f276f1d5e39e58c51fb3ffea6315539c2ee91e2f7559ef85ae3b39eb61e
 	sha256sums = 6a903795ec27f72787505588d99c5b4cecbb93e967d811d5469bdcf4263087be
 
-pkgname = mock-api-server
+pkgname = apimocker
