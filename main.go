@@ -29,6 +29,16 @@ type Endpoint struct {
 	Data string `yaml:"data" json:"data"`
 	Count int `yaml:"count" json:"count"`
 	File string `yaml:"file" json:"file"`
+	Status int `yaml:"status" json:"status"`
+	Delay string `yaml:"delay" json:"delay"`
+	Headers map[string]string `yaml:"headers" json:"headers"`
+	Errors []ErrorConfig `yaml:"errors" json:"errors"`
+}
+
+type ErrorConfig struct {
+	Probability float64 `yaml:"probability" json:"probability"`
+	Status int `yaml:"status" json:"status"`
+	Message string `yaml:"message" json:"message"`
 }
 
 type Config struct {
@@ -85,7 +95,59 @@ func loadConfig(path string) (*Config, error) {
 	} else {
 		err = json.Unmarshal(file, config)
 	}
+
+	for i := range config.Endpoints {
+		if config.Endpoints[i].Status == 0{
+			config.Endpoints[i].Status = 200
+		}
+		if config.Endpoints[i].Count == 0 {
+			config.Endpoints[i].Count = 1
+		}
+	}
+
 	return config, err 
+}
+
+func parseDuration(delayStr string) time.Duration {
+	if delayStr == "" {
+		return 0
+	}
+
+	if strings.HasSuffix(delayStr, "ms") {
+		if ms, err := strconv.Atoi(strings.TrimSuffix(delayStr, "ms")); err == nil {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if strings.HasSuffix(delayStr, "s") {
+		if s, err := strconv.Atoi(strings.TrimSuffix(delayStr, "s")); err == nil {
+			return time.Duration(s) * time.Second
+		}
+	}
+	if strings.HasSuffix(delayStr, "m") {
+		if m, err := strconv.Atoi(strings.TrimSuffix(delayStr, "m")); err == nil {
+			return time.Duration(m) * time.Minute
+		}
+	}
+
+	if duration, err := time.ParseDuration(delayStr); err == nil {
+		return duration
+	}
+
+	return 0
+}
+
+func shouldTriggerError(errors []ErrorConfig) (bool, ErrorConfig) {
+	if len(errors) == 0 {
+		return false, ErrorConfig{}
+	}
+
+	for _, errorConfig := range errors {
+		if rand.Float64() < errorConfig.Probability {
+			return true, errorConfig
+		}
+	}
+
+	return false, ErrorConfig{}
 }
 
 func generateFakeData(schema string, count int) ([]map[string]interface{}, error) {
@@ -110,12 +172,9 @@ func generateFakeData(schema string, count int) ([]map[string]interface{}, error
 		"bool": func() interface{} { return rand.Intn(2) == 1 },
 		"int": func() interface{} { return rand.Intn(1000) },
 		"string": func() interface{} { return faker.Word() },
-		// "city": func() interface{} { return faker.City() },
-		// "country": func() interface{} { return faker.Country() },
 		"lat": func() interface{} { return faker.Latitude() },
 		"lng": func() interface{} { return faker.Longitude() },
 		"ipv4": func() interface{} { return faker.IPv4() },
-		// "ipv6": func() interface{} { return faker.Ipv6() },
 		"url": func() interface{} { return faker.URL() },
 		"username": func() interface{} { return faker.Username() },
 		"password": func() interface{} { return faker.Password() },
@@ -247,8 +306,18 @@ func startServer(config *Config) []string {
 	for _, ep := range config.Endpoints {
 		path := ep.Path
 		method := ep.Method
-		// dataCount := ep.Count
 		msg := fmt.Sprintf("[%s] http://localhost:%d%s", method, config.Port, path)
+
+		if ep.Status != 200 {
+			msg += fmt.Sprintf(" (status: %d)", ep.Status)
+		}
+		if ep.Delay != "" {
+			msg += fmt.Sprintf(" (delay: %s)", ep.Delay)
+		}
+		if len(ep.Errors) > 0 {
+			msg += " (with errors)"
+		}
+
 		messages = append(messages, msg)
 
 		if ep.File != "" {
@@ -261,6 +330,29 @@ func startServer(config *Config) []string {
 			if r.Method != method {
 				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 				return
+			}
+
+			if endpoint.Delay != "" {
+				delay := parseDuration(endpoint.Delay)
+				if delay > 0 {
+					time.Sleep(delay)
+				}
+			}
+
+			if shouldError, errorConfig := shouldTriggerError(endpoint.Errors); shouldError {
+				w.WriteHeader(errorConfig.Status)
+				if errorConfig.Message != "" {
+					w.Header().Set("Content-Type", "application/json")
+					errorResponse := map[string]string{
+						"error": errorConfig.Message,
+					}
+					json.NewEncoder(w).Encode(errorResponse)
+				}
+				return
+			}
+
+			for key, value := range endpoint.Headers {
+				w.Header().Set(key,value)
 			}
 
 			params := r.URL.Query()
@@ -281,35 +373,39 @@ func startServer(config *Config) []string {
 	
 			data, err := generateFakeData(endpoint.Data, generateCount)
 			if err != nil {
-				http.Error(w, "Failed to generate data", http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Header().Set("Content-Type","application/json")
+				errorResponse := map[string]string{
+					"error": "Failed to generate data",
+				}
+				json.NewEncoder(w).Encode(errorResponse)
 				return
 			}
 
 			filteredData := applyQueryFilters(data, params)
 
-			response := map[string]interface{}{
-				"data": filteredData,
-			}
+			w.WriteHeader(endpoint.Status)
 
 			if params.Get("meta") == "true" {
-				response["meta"] = map[string]interface{}{
-					"count": len(filteredData),
-					"total": len(data),
-					"offset": params.Get("offset"),
-					"limit": params.Get("count"),
-					"sort": params.Get("sort"),
-					"order": params.Get("order"),
-					"filter": params.Get("filter"),
+				response := map[string]interface{}{
+					"data": filteredData,
+					"meta": map[string]interface{}{
+						"count": len(filteredData),
+						"total": len(data),
+						"offset": params.Get("offset"),
+						"limit": params.Get("count"),
+						"sort": params.Get("sort"),
+						"order": params.Get("order"),
+						"filter": params.Get("filter"),
+						"status": endpoint.Status,
+					},
 				}
+				w.Header().Set("Content-Type","application/json")
+				json.NewEncoder(w).Encode(response)
 			} else {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(filteredData)
-				return
 			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
-
 		})
 	}
 
@@ -337,7 +433,34 @@ Supports dynamic query parameters:
  - offset: number of items to skip
  - meta: include metadata in response (true/false)
 
-Example:
+Additional features:
+ - Custom status codes
+ - Response delays (ms, s, m or Go duration format)
+ - Custom headers
+ - Error simulation with probability
+
+Example config:
+port: 5050
+endpoints:
+  - path: /users
+    method: GET
+    status: 200
+    delay: 500ms
+    headers:
+        X-Test-Mode: "true"
+        X-API-Version: "v1"
+    data: |
+        {
+            "id": "uuid",
+            "name": "name",
+            "email": "email"
+        }
+    errors:
+      - probability: 0.1
+        status: 500
+        message: "Internal server error"
+
+Examples:
  - GET /users?count=10
  - GET /users?sort=name&order=desc
  - GET /users?filter=name:john&count=5
