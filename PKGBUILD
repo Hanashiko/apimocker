@@ -17,5 +17,5 @@ build() {
 }
 
 package() {
-    install -Dm755 "$srcdir/mock-api-server" "$pkgdir/usr/bin/apimocker"
+    install -Dm755 "$srcdir/apimocker" "$pkgdir/usr/bin/apimocker"
 }
