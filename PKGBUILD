@@ -9,7 +9,7 @@ license=('MIT')
 depends=()
 makedepends=('go')
 source=('main.go' 'go.mod' 'go.sum')
-sha256sums=('dca9eb12cab69223d421da830e684f004497fd88e4ab5381bc55ed1eabd09f7a' 'b49a5f276f1d5e39e58c51fb3ffea6315539c2ee91e2f7559ef85ae3b39eb61e' '6a903795ec27f72787505588d99c5b4cecbb93e967d811d5469bdcf4263087be')
+sha256sums=('dca9eb12cab69223d421da830e684f004497fd88e4ab5381bc55ed1eabd09f7a' '4f113e8623b72f824d04341806d11a44042b8b2849c43dff5f3fcbb97e906f76' '6a903795ec27f72787505588d99c5b4cecbb93e967d811d5469bdcf4263087be')
 
 build() {
     cd "$srcdir"
