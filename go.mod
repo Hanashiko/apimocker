@@ -1,4 +1,4 @@
-module mock-api-server
+module apimocker
 
 go 1.24.3
 
