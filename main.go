@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math/rand"
@@ -41,9 +42,86 @@ type ErrorConfig struct {
 	Message string `yaml:"message" json:"message"`
 }
 
+type LogConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	Format string `yaml:"format" json:"format"`
+	Output string `yaml:"output" json:"output"`
+}
+
 type Config struct {
 	Port int `yaml:"port" json:"port"`
 	Endpoints []Endpoint `yaml:"endpoints" json:"endpoints"`
+	Logging LogConfig `yaml:"logging" json:"logging"`
+}
+
+type RequestLog struct {
+	Timestamp string `json:"timestamp"`
+	Method string `json:"method"`
+	Path string `json:"path"`
+	Query string `json:"query,omitempty"`
+	StatusCode int `json:"status_code"`
+	ResponseTime string `json:"response_time"`
+	UserAgent string `json:"user_agent,omitempty"`
+	RemoteAddr string `json:"remote_addr"`
+	ContentLength int64 `json:"content_length"`
+}
+
+type Logger struct {
+	writer io.Writer
+	format string
+}
+
+func NewLogger(config LogConfig) (*Logger, error) {
+	if !config.Enabled {
+		return &Logger{writer: io.Discard, format: config.Format}, nil
+	}
+
+	var writer io.Writer
+	if config.Output == "stdout" || config.Output == "" {
+		writer = os.Stdout
+	} else {
+		file, err := os.OpenFile(config.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open log file: %v",err)
+		}
+		writer = file
+	}
+
+	format := config.Format
+	if format != "json" && format != "plain" {
+		format = "plain"
+	}
+	
+	return &Logger{writer: writer, format: format}, nil
+}
+
+func (l *Logger) LogRequest(reqLog RequestLog) {
+	if l.writer == io.Discard {
+		return
+	}
+
+	if l.format == "json" {
+		data, err := json.Marshal(reqLog)
+		if err != nil {
+			return
+		}
+		fmt.Fprintln(l.writer, string(data))
+	} else {
+		query := ""
+		if reqLog.Query != "" {
+			query = "?" + reqLog.Query
+		}
+		fmt.Fprintf(l.writer, "[%s] %s %s%s - %d - %s - %s - %d bytes\n",
+			reqLog.Timestamp,
+			reqLog.Method,
+			reqLog.Path,
+			query,
+			reqLog.StatusCode,
+			reqLog.ResponseTime,
+			reqLog.RemoteAddr,
+			reqLog.ContentLength,
+			)
+	}
 }
 
 type model struct {
@@ -103,6 +181,13 @@ func loadConfig(path string) (*Config, error) {
 		if config.Endpoints[i].Count == 0 {
 			config.Endpoints[i].Count = 1
 		}
+	}
+
+	if config.Logging.Format == "" {
+		config.Logging.Format = "plain"
+	}
+	if config.Logging.Output == "" {
+		config.Logging.Output = "stdout"
 	}
 
 	return config, err 
@@ -282,8 +367,9 @@ func applyQueryFilters(data []map[string]interface{}, params url.Values) []map[s
 	return result
 }
 
-func serveFileHandler(path string) http.HandlerFunc {
+func serveFileHandler(path string, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		ext := filepath.Ext(path)
 		switch ext := strings.ToLower(ext); ext {
 		case ".jpg", ".jpeg":
@@ -298,10 +384,187 @@ func serveFileHandler(path string) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
 		http.ServeFile(w, r, path)
+
+		duration := time.Since(start)
+		fileInfo, _ := os.Stat(path)
+		contentLength := int64(0)
+		if fileInfo != nil {
+			contentLength = fileInfo.Size()
+		}
+
+		reqLog := RequestLog{
+			Timestamp: start.Format(time.RFC3339),
+			Method: r.Method,
+			Path: r.URL.Path,
+			Query: r.URL.RawQuery,
+			StatusCode: 200,
+			ResponseTime: duration.String(),
+			UserAgent: r.Header.Get("User-Agent"),
+			RemoteAddr: r.RemoteAddr,
+			ContentLength: contentLength,
+		}
+		logger.LogRequest(reqLog)
 	}
 }
 
-func startServer(config *Config) []string {
+func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		statusCode := endpoint.Status
+
+		if r.Method != endpoint.Method {
+			statusCode = http.StatusMethodNotAllowed
+			http.Error(w, "Method Not Allowed", statusCode)
+
+			duration := time.Since(start)
+			reqLog := RequestLog{
+				Timestamp: start.Format(time.RFC3339),
+				Method: r.Method,
+				Path: r.URL.Path,
+				Query: r.URL.RawQuery,
+				StatusCode: statusCode,
+				ResponseTime: duration.String(),
+				UserAgent: r.Header.Get("User-Agent"),
+				RemoteAddr: r.RemoteAddr,
+				ContentLength: 0,
+			}
+			logger.LogRequest(reqLog)
+			return
+		}
+		
+		if endpoint.Delay != "" {
+			delay := parseDuration(endpoint.Delay)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+		}
+
+	if shouldError, errorConfig := shouldTriggerError(endpoint.Errors); shouldError {
+			statusCode = errorConfig.Status
+			w.WriteHeader(statusCode)
+			contentLength := int64(0)
+			if errorConfig.Message != "" {
+				w.Header().Set("Content-Type", "application/json")
+				errorResponse := map[string]string{
+					"error": errorConfig.Message,
+				}
+				data, _ := json.Marshal(errorResponse)
+				contentLength = int64(len(data))
+				w.Write(data)
+			}
+
+			duration := time.Since(start)
+			reqLog := RequestLog{
+				Timestamp: start.Format(time.RFC3339),
+				Method: r.Method,
+				Path: r.URL.Path,
+				Query: r.URL.RawQuery,
+				StatusCode: statusCode,
+				ResponseTime: duration.String(),
+				UserAgent: r.Header.Get("User-Agent"),
+				RemoteAddr: r.RemoteAddr,
+				ContentLength: contentLength,
+			}
+			logger.LogRequest(reqLog)
+			return
+		}
+
+		for key, value := range endpoint.Headers {
+			w.Header().Set(key,value)
+		}
+
+		params := r.URL.Query()
+		
+		count := endpoint.Count
+		if countStr := params.Get("count"); countStr != "" {
+			if parsedCount, err := strconv.Atoi(countStr); err == nil && parsedCount > 0 {
+				count = parsedCount
+			}
+		} else if limitStr := params.Get("limit"); limitStr != "" {
+			if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+				count = parsedLimit
+			}
+		}
+
+		generateCount := count
+
+		data, err := generateFakeData(endpoint.Data, generateCount)
+		if err != nil {
+			statusCode = http.StatusInternalServerError
+			w.WriteHeader(statusCode)
+			w.Header().Set("Content-Type","application/json")
+			errorResponse := map[string]string{
+				"error": "Failed to generate data",
+			}
+			responseData, _ := json.Marshal(errorResponse)
+			w.Write(responseData)
+			
+			duration := time.Since(start)
+			reqLog := RequestLog{
+				Timestamp: start.Format(time.RFC3339),
+				Method: r.Method,
+				Path: r.URL.Path,
+				Query: r.URL.RawQuery,
+				StatusCode: statusCode,
+				ResponseTime: duration.String(),
+				UserAgent: r.Header.Get("User-Agent"),
+				RemoteAddr: r.RemoteAddr,
+				ContentLength: int64(len(responseData)),
+			}
+			logger.LogRequest(reqLog)
+			return
+		}
+
+		filteredData := applyQueryFilters(data, params)
+
+		w.WriteHeader(statusCode)
+
+		var responseData []byte
+		if params.Get("meta") == "true" {
+			response := map[string]interface{}{
+				"data": filteredData,
+				"meta": map[string]interface{}{
+					"count": len(filteredData),
+					"total": len(data),
+					"offset": params.Get("offset"),
+					"limit": params.Get("count"),
+					"sort": params.Get("sort"),
+					"order": params.Get("order"),
+					"filter": params.Get("filter"),
+					"status": endpoint.Status,
+				},
+			}
+			w.Header().Set("Content-Type","application/json")
+			responseData, _ = json.Marshal(response)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			responseData, _ = json.Marshal(filteredData)
+		}
+		
+		w.Write(responseData)
+
+		duration := time.Since(start)
+		reqLog := RequestLog{
+			Timestamp: start.Format(time.RFC3339),
+			Method: r.Method,
+			Path: r.URL.Path,
+			Query: r.URL.RawQuery,
+			StatusCode: statusCode,
+			ResponseTime: duration.String(),
+			UserAgent: r.Header.Get("User-Agent"),
+			RemoteAddr: r.RemoteAddr,
+			ContentLength: int64(len(responseData)),
+		}
+		logger.LogRequest(reqLog)
+	}
+}
+
+func startServer(config *Config) ([]string, error) {
+	logger, err := NewLogger(config.Logging)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %v", err)
+	}
+
 	var messages []string
 	for _, ep := range config.Endpoints {
 		path := ep.Path
@@ -321,99 +584,29 @@ func startServer(config *Config) []string {
 		messages = append(messages, msg)
 
 		if ep.File != "" {
-			http.HandleFunc(path, serveFileHandler(ep.File))
+			http.HandleFunc(path, serveFileHandler(ep.File, logger))
 			continue
 		}
 
-		endpoint := ep
-		http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != method {
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-				return
-			}
+		http.HandleFunc(path, createLoggingHandler(ep, logger))
 
-			if endpoint.Delay != "" {
-				delay := parseDuration(endpoint.Delay)
-				if delay > 0 {
-					time.Sleep(delay)
-				}
-			}
+	}
 
-			if shouldError, errorConfig := shouldTriggerError(endpoint.Errors); shouldError {
-				w.WriteHeader(errorConfig.Status)
-				if errorConfig.Message != "" {
-					w.Header().Set("Content-Type", "application/json")
-					errorResponse := map[string]string{
-						"error": errorConfig.Message,
-					}
-					json.NewEncoder(w).Encode(errorResponse)
-				}
-				return
-			}
-
-			for key, value := range endpoint.Headers {
-				w.Header().Set(key,value)
-			}
-
-			params := r.URL.Query()
-
-			count := endpoint.Count
-			if countStr := params.Get("count"); countStr != "" {
-				if parsedCount, err := strconv.Atoi(countStr); err == nil && parsedCount > 0 {
-					count = parsedCount
-				}
-			} else if limitStr := params.Get("limit"); limitStr != "" {
-				if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-					count = parsedLimit
-				}
-			}
-
-
-			generateCount := count
-	
-			data, err := generateFakeData(endpoint.Data, generateCount)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Header().Set("Content-Type","application/json")
-				errorResponse := map[string]string{
-					"error": "Failed to generate data",
-				}
-				json.NewEncoder(w).Encode(errorResponse)
-				return
-			}
-
-			filteredData := applyQueryFilters(data, params)
-
-			w.WriteHeader(endpoint.Status)
-
-			if params.Get("meta") == "true" {
-				response := map[string]interface{}{
-					"data": filteredData,
-					"meta": map[string]interface{}{
-						"count": len(filteredData),
-						"total": len(data),
-						"offset": params.Get("offset"),
-						"limit": params.Get("count"),
-						"sort": params.Get("sort"),
-						"order": params.Get("order"),
-						"filter": params.Get("filter"),
-						"status": endpoint.Status,
-					},
-				}
-				w.Header().Set("Content-Type","application/json")
-				json.NewEncoder(w).Encode(response)
-			} else {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(filteredData)
-			}
-		})
+	if config.Logging.Enabled {
+		logMsg := fmt.Sprintf("Logging: %s format", config.Logging.Format)
+		if config.Logging.Output == "stdout" {
+			logMsg += " to stdout"
+		} else {
+			logMsg += fmt.Sprintf(" to %s", config.Logging.Output)
+		}
+		messages = append(messages, logMsg)
 	}
 
 	go func() {
 		log.Printf("Starting mock server on :%d\n", config.Port)
 		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d",config.Port),nil))
 	}()
-		return messages
+		return messages, nil
 }
 
 func main() {
@@ -441,6 +634,10 @@ Additional features:
 
 Example config:
 port: 5050
+logging:
+  enabled: true
+  format: json # or "plain"
+  output: stdout # or file path like "requests.log"
 endpoints:
   - path: /users
     method: GET
@@ -470,7 +667,10 @@ Examples:
 			if err != nil {
 				log.Fatalf("Failed to load config: %v", err)
 			}
-			messages := startServer(config)
+			messages, err := startServer(config)
+			if err != nil {
+				log.Fatalf("Failed to start server: %v", err)
+			}
 			p := tea.NewProgram(model{messages: messages})
 			if err := p.Start(); err != nil {
 				log.Fatalf("Error running TUI: %v", err)

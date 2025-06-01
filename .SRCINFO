@@ -9,7 +9,7 @@ pkgbase = apimocker
 	source = main.go
 	source = go.mod
 	source = go.sum
-	sha256sums = 0adfebb633708b9f82700990ed43342dd2d97f1c61540f807ba0d56c22f32d59
+	sha256sums = dca9eb12cab69223d421da830e684f004497fd88e4ab5381bc55ed1eabd09f7a
 	sha256sums = b49a5f276f1d5e39e58c51fb3ffea6315539c2ee91e2f7559ef85ae3b39eb61e
 	sha256sums = 6a903795ec27f72787505588d99c5b4cecbb93e967d811d5469bdcf4263087be
 
