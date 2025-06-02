@@ -111,7 +111,7 @@ func (l *Logger) LogRequest(reqLog RequestLog) {
 		if reqLog.Query != "" {
 			query = "?" + reqLog.Query
 		}
-		fmt.Fprintf(l.writer, "[%s] %s %s%s - %d - %s - %s - %d bytes\n",
+		fmt.Fprintf(l.writer, "[%s] %s %s%s - %d - %s - %s - %d bytes\r\n",
 			reqLog.Timestamp,
 			reqLog.Method,
 			reqLog.Path,
@@ -355,7 +355,7 @@ func applyQueryFilters(data []map[string]interface{}, params url.Values) []map[s
 			count = parsedCount
 		} 
 	} else if limitStr := params.Get("limit"); limitStr != "" {
-		if parsedCount, err := strconv.Atoi(countStr); err == nil && parsedCount > 0 {
+		if parsedCount, err := strconv.Atoi(limitStr); err == nil && parsedCount > 0 {
 			count = parsedCount
 		}
 	}
