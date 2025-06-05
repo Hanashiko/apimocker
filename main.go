@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type AuthConfig struct {
+	Type string `yaml:"type" json:"type"`
+	Token string `yaml:"token" json:"token"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
+}
+
 type Endpoint struct {
 	Path string `yaml:"path" json:"path"`
 	Method string `yaml:"method" json:"method"`
@@ -34,6 +42,7 @@ type Endpoint struct {
 	Delay string `yaml:"delay" json:"delay"`
 	Headers map[string]string `yaml:"headers" json:"headers"`
 	Errors []ErrorConfig `yaml:"errors" json:"errors"`
+	Auth *AuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
 type ErrorConfig struct {
@@ -64,6 +73,8 @@ type RequestLog struct {
 	UserAgent string `json:"user_agent,omitempty"`
 	RemoteAddr string `json:"remote_addr"`
 	ContentLength int64 `json:"content_length"`
+	AuthType string `json:"auth_type,omitempty"`
+	AuthResult string `json:"auth_result,omitempty"`
 }
 
 type Logger struct {
@@ -111,7 +122,11 @@ func (l *Logger) LogRequest(reqLog RequestLog) {
 		if reqLog.Query != "" {
 			query = "?" + reqLog.Query
 		}
-		fmt.Fprintf(l.writer, "[%s] %s %s%s - %d - %s - %s - %d bytes\r\n",
+		authInfo := ""
+		if reqLog.AuthType != "" {
+			authInfo = fmt.Sprintf(" - Auth: %s (%s)", reqLog.AuthType, reqLog.AuthResult)
+		}
+		fmt.Fprintf(l.writer, "[%s] %s %s%s - %d - %s - %s - %d bytes%s\r\n",
 			reqLog.Timestamp,
 			reqLog.Method,
 			reqLog.Path,
@@ -120,6 +135,7 @@ func (l *Logger) LogRequest(reqLog RequestLog) {
 			reqLog.ResponseTime,
 			reqLog.RemoteAddr,
 			reqLog.ContentLength,
+			authInfo,
 			)
 	}
 }
@@ -157,6 +173,9 @@ func (m model) View() string {
 	b.WriteString("- filter: field:value to filter by\n")
 	b.WriteString("- offset: number of items to skip\n")
 	b.WriteString("- limit: alias for count\n")
+	b.WriteString("\nAuthentication types supported:\n")
+	b.WriteString("- Basic Auth: Authorization: Basic <base64(username:password)>\n")
+	b.WriteString("- Bearer Token: Authorization: Bearer <token>\n")
 	b.WriteString("\nPress q to quit.\n")
 	return b.String()
 }
@@ -233,6 +252,62 @@ func shouldTriggerError(errors []ErrorConfig) (bool, ErrorConfig) {
 	}
 
 	return false, ErrorConfig{}
+}
+
+func authenticateRequest(r *http.Request, authConfig *AuthConfig) (bool, string, string){
+	if authConfig == nil {
+		return true, "", "no-auth"
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return false, authConfig.Type, "missing-auth"
+	}
+
+	switch strings.ToLower(authConfig.Type) {
+	case "basic":
+		return authenticateBasic(authHeader, authConfig)
+	case "bearer":
+		return authenticateBearer(authHeader, authConfig)
+	default:
+		return false, authConfig.Type, "invalid-auth-type"
+	}
+}
+
+func authenticateBasic(authHeader string, authConfig *AuthConfig) (bool, string, string) {
+	if !strings.HasPrefix(authHeader, "Basic "){
+		return false, "basic", "invalid-basic-format"
+	}
+
+	encoded := strings.TrimPrefix(authHeader, "Basic ")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return false, "basic", "invalid-base64"
+	}
+
+	credentials := strings.SplitN(string(decoded), ":", 2)
+	if len(credentials) != 2 {
+		return false, "basic", "invalid-credentials-format"
+	}
+
+	username, password := credentials[0], credentials[1]
+	if username == authConfig.Username && password == authConfig.Password {
+		return true, "basic", "success"
+	}
+	return false, "basic", "invalid-credentials"
+}
+
+func authenticateBearer(authHeader string, authConfig *AuthConfig) (bool, string, string) {
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return false, "bearer", "invalid-bearer-format"
+	}
+
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == authConfig.Token {
+		return true, "bearer", "success"
+	}
+
+	return false, "bearer", "invalid-token"
 }
 
 func generateFakeData(schema string, count int) ([]map[string]interface{}, error) {
@@ -367,9 +442,40 @@ func applyQueryFilters(data []map[string]interface{}, params url.Values) []map[s
 	return result
 }
 
-func serveFileHandler(path string, logger *Logger) http.HandlerFunc {
+func serveFileHandler(path string, endpoint Endpoint, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		statusCode := 200
+
+		authSuccess, authType, authResult := authenticateRequest(r, endpoint.Auth)
+		if !authSuccess {
+			statusCode = http.StatusUnauthorized
+			w.WriteHeader(statusCode)
+			w.Header().Set("Content-Type", "application/json")
+			errorResponse := map[string]string{
+				"error": "Authentication required",
+			}
+			data, _ := json.Marshal(errorResponse)
+			w.Write(data)
+
+			duration := time.Since(start)
+			reqLog := RequestLog{
+				Timestamp: start.Format(time.RFC3339),
+				Method: r.Method,
+				Path: r.URL.Path,
+				Query: r.URL.RawQuery,
+				StatusCode: statusCode,
+				ResponseTime: duration.String(),
+				UserAgent: r.Header.Get("User-Agent"),
+				RemoteAddr: r.RemoteAddr,
+				ContentLength: int64(len(data)),
+				AuthType: authType,
+				AuthResult: authResult,
+			}
+			logger.LogRequest(reqLog)
+			return
+		}
+
 		ext := filepath.Ext(path)
 		switch ext := strings.ToLower(ext); ext {
 		case ".jpg", ".jpeg":
@@ -402,6 +508,8 @@ func serveFileHandler(path string, logger *Logger) http.HandlerFunc {
 			UserAgent: r.Header.Get("User-Agent"),
 			RemoteAddr: r.RemoteAddr,
 			ContentLength: contentLength,
+			AuthType: authType,
+			AuthResult: authResult,
 		}
 		logger.LogRequest(reqLog)
 	}
@@ -427,6 +535,37 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 				UserAgent: r.Header.Get("User-Agent"),
 				RemoteAddr: r.RemoteAddr,
 				ContentLength: 0,
+			}
+			logger.LogRequest(reqLog)
+			return
+		}
+
+		authSuccess, authType, authResult := authenticateRequest(r, endpoint.Auth)
+		if !authSuccess {
+			statusCode = http.StatusUnauthorized
+			w.WriteHeader(statusCode)
+			w.Header().Set("Content-Type", "application/json")
+			errorResponse := map[string]string{
+				"error": "Authentication required",
+			}
+
+			data, _ := json.Marshal(errorResponse)
+			contentLength := int64(len(data))
+			w.Write(data)
+
+			duration := time.Since(start)
+			reqLog := RequestLog{
+				Timestamp: start.Format(time.RFC3339),
+				Method: r.Method,
+				Path: r.URL.Path,
+				Query: r.URL.RawQuery,
+				StatusCode: statusCode,
+				ResponseTime: duration.String(),
+				UserAgent: r.Header.Get("User-Agent"),
+				RemoteAddr: r.RemoteAddr,
+				ContentLength: contentLength,
+				AuthType: authType,
+				AuthResult: authResult,
 			}
 			logger.LogRequest(reqLog)
 			return
@@ -464,6 +603,8 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 				UserAgent: r.Header.Get("User-Agent"),
 				RemoteAddr: r.RemoteAddr,
 				ContentLength: contentLength,
+				AuthType: authType,
+				AuthResult: authResult,
 			}
 			logger.LogRequest(reqLog)
 			return
@@ -510,6 +651,8 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 				UserAgent: r.Header.Get("User-Agent"),
 				RemoteAddr: r.RemoteAddr,
 				ContentLength: int64(len(responseData)),
+				AuthType: authType,
+				AuthResult: authResult,
 			}
 			logger.LogRequest(reqLog)
 			return
@@ -554,6 +697,8 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 			UserAgent: r.Header.Get("User-Agent"),
 			RemoteAddr: r.RemoteAddr,
 			ContentLength: int64(len(responseData)),
+			AuthType: authType,
+			AuthResult: authResult,
 		}
 		logger.LogRequest(reqLog)
 	}
@@ -584,7 +729,7 @@ func startServer(config *Config) ([]string, error) {
 		messages = append(messages, msg)
 
 		if ep.File != "" {
-			http.HandleFunc(path, serveFileHandler(ep.File, logger))
+			http.HandleFunc(path, serveFileHandler(ep.File, ep, logger))
 			continue
 		}
 
@@ -615,8 +760,8 @@ func main() {
 
 	var rootCmd = &cobra.Command{
 		Use: "apimocker",
-		Short: "Lightweight TUI/mock REST API server with query parameter support",
-		Long: `apimocker - A lightweight mock REST API server with TUI interface.
+		Short: "Lightweight TUI/mock REST API server with authentication and query parameter support",
+		Long: `apimocker - A lightweight mock REST API server with TUI interface and authentication.
 
 Supports dynamic query parameters:
  - count/limit: number of items to return
@@ -625,6 +770,10 @@ Supports dynamic query parameters:
  - filter: field:value to filter by
  - offset: number of items to skip
  - meta: include metadata in response (true/false)
+
+Authentication types:
+ - Basic Auth: username and password
+ - Bearer Token: token-based authenticationn
 
 Additional features:
  - Custom status codes
@@ -646,6 +795,9 @@ endpoints:
     headers:
         X-Test-Mode: "true"
         X-API-Version: "v1"
+	auth:
+		type: bearer
+		token: mysecrettoken
     data: |
         {
             "id": "uuid",
@@ -656,6 +808,16 @@ endpoints:
       - probability: 0.1
         status: 500
         message: "Internal server error"
+  - path: /admin
+	method: GET
+	auth:
+		type: basic
+		username: admin
+		password: secret123
+	data: |
+		{
+			"id": "uuid"
+		}
 
 Examples:
  - GET /users?count=10
