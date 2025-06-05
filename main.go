@@ -311,20 +311,6 @@ func authenticateBearer(authHeader string, authConfig *AuthConfig) (bool, string
 }
 
 func generateFakeData(schema string, count int) ([]map[string]interface{}, error) {
-	var template map[string]string
-	if err := json.Unmarshal([]byte(schema), &template); err != nil {
-		var fake []map[string]interface{}
-		for i := 0; i < count; i++ {
-			data := map[string]interface{}{}
-			err := faker.FakeData(&data)
-			if err != nil {
-				return nil, err
-			}
-			fake = append(fake, data)
-		}
-		return fake,nil
-	}
-
 	supported := map[string]func() interface{}{
 		"uuid": func() interface{} { return uuid.New().String() },
 		"name": func() interface{} { return faker.Name() },
@@ -343,7 +329,21 @@ func generateFakeData(schema string, count int) ([]map[string]interface{}, error
 		"timestamp": func() interface{} { return time.Now().Unix() },
 	}
 
-	var result []map[string]interface{}
+	var template map[string]string
+	if err := json.Unmarshal([]byte(schema), &template); err != nil {
+		fake := make([]map[string]interface{}, 0, count)
+		for i := 0; i < count; i++ {
+			item := map[string]interface{}{
+				"id": uuid.New().String(),
+				"name": faker.Name(),
+				"email": faker.Email(),
+			}
+			fake = append(fake, item)
+		}
+		return fake,nil
+	}
+
+	result := make([]map[string]interface{}, 0, count)
 	for i := 0; i < count; i++ {
 		row := make(map[string]interface{})
 		for key, typ := range template {
