@@ -10,8 +10,8 @@ depends=('glibc')
 makedepends=('go')
 source=('main.go' 'go.mod' 'go.sum' 'LICENSE')
 sha256sums=('882ece625d42ef55f72014de8bfdc22007b3eaaab32dd048fdacef9783bc2964'
-    '4f113e8623b72f824d04341806d11a44042b8b2849c43dff5f3fcbb97e906f76' 
-    '6a903795ec27f72787505588d99c5b4cecbb93e967d811d5469bdcf4263087be' 
+    '909618e73ddcc1d9bf6fbcd59decd77261c170092791893cabcd77dfcfe2fda8'
+    '101759e3fedaca0cb2e1688d9bd73d525f329381cd893ef920ba2b09d9ad40b0'
     '60a21faf5459b93996f566dde48d4bb44218cec03417bbcdd6c4731ef3b31bf5')
 
 build() {
