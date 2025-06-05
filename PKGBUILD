@@ -1,7 +1,7 @@
 # Maintainer: Hanashiko <hlichisper@gmail.com>
 pkgname=apimocker
 pkgver=0.1.4
-pkgrel=2
+pkgrel=3
 pkgdesc="Lightweight TUI/mock server for running REST API from YAML/JSON description with authentication and query parameter support"
 arch=('x86_64')
 url="https://github.com/Hanashiko/apimocker"

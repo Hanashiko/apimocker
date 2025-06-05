@@ -1,7 +1,7 @@
 pkgbase = apimocker
 	pkgdesc = Lightweight TUI/mock server for running REST API from YAML/JSON description with authentication and query parameter support
 	pkgver = 0.1.4
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/Hanashiko/apimocker
 	arch = x86_64
 	license = MIT
