@@ -450,8 +450,8 @@ func serveFileHandler(path string, endpoint Endpoint, logger *Logger) http.Handl
 		authSuccess, authType, authResult := authenticateRequest(r, endpoint.Auth)
 		if !authSuccess {
 			statusCode = http.StatusUnauthorized
-			w.WriteHeader(statusCode)
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(statusCode)
 			errorResponse := map[string]string{
 				"error": "Authentication required",
 			}
@@ -543,8 +543,8 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 		authSuccess, authType, authResult := authenticateRequest(r, endpoint.Auth)
 		if !authSuccess {
 			statusCode = http.StatusUnauthorized
-			w.WriteHeader(statusCode)
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(statusCode)
 			errorResponse := map[string]string{
 				"error": "Authentication required",
 			}
@@ -579,9 +579,8 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 		}
 
 	if shouldError, errorConfig := shouldTriggerError(endpoint.Errors); shouldError {
+			var contentLength int64
 			statusCode = errorConfig.Status
-			w.WriteHeader(statusCode)
-			contentLength := int64(0)
 			if errorConfig.Message != "" {
 				w.Header().Set("Content-Type", "application/json")
 				errorResponse := map[string]string{
@@ -589,7 +588,11 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 				}
 				data, _ := json.Marshal(errorResponse)
 				contentLength = int64(len(data))
+				w.WriteHeader(statusCode)
 				w.Write(data)
+			} else {
+				contentLength = 0
+				w.WriteHeader(statusCode)
 			}
 
 			duration := time.Since(start)
@@ -611,7 +614,7 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 		}
 
 		for key, value := range endpoint.Headers {
-			w.Header().Set(key,value)
+			w.Header().Add(key, value)
 		}
 
 		params := r.URL.Query()
@@ -631,9 +634,9 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 
 		data, err := generateFakeData(endpoint.Data, generateCount)
 		if err != nil {
+			w.Header().Set("Content-Type","application/json")
 			statusCode = http.StatusInternalServerError
 			w.WriteHeader(statusCode)
-			w.Header().Set("Content-Type","application/json")
 			errorResponse := map[string]string{
 				"error": "Failed to generate data",
 			}
@@ -660,8 +663,6 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 
 		filteredData := applyQueryFilters(data, params)
 
-		w.WriteHeader(statusCode)
-
 		var responseData []byte
 		if params.Get("meta") == "true" {
 			response := map[string]interface{}{
@@ -677,13 +678,13 @@ func createLoggingHandler(endpoint Endpoint, logger *Logger) http.HandlerFunc {
 					"status": endpoint.Status,
 				},
 			}
-			w.Header().Set("Content-Type","application/json")
 			responseData, _ = json.Marshal(response)
 		} else {
-			w.Header().Set("Content-Type", "application/json")
 			responseData, _ = json.Marshal(filteredData)
 		}
 		
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
 		w.Write(responseData)
 
 		duration := time.Since(start)
